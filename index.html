@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bóbr na Rzece</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #1a3a1a;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  font-family: 'Segoe UI', sans-serif;
+  overflow: hidden;
+}
+#gameContainer {
+  position: relative;
+  width: 480px;
+  height: 720px;
+}
+canvas {
+  display: block;
+  border: 3px solid #2d5016;
+  border-radius: 8px;
+  box-shadow: 0 0 30px rgba(0,0,0,0.5);
+}
+#ui {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  display: flex;
+  justify-content: space-between;
+  color: #fff;
+  font-size: 18px;
+  font-weight: bold;
+  text-shadow: 1px 1px 3px rgba(0,0,0,0.8);
+  pointer-events: none;
+  z-index: 10;
+}
+#overlay {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  color: #fff;
+  z-index: 20;
+  border-radius: 8px;
+}
+#overlay.hidden { display: none; }
+#overlay h1 { font-size: 36px; margin-bottom: 10px; }
+#overlay h2 { font-size: 28px; margin-bottom: 10px; color: #f4a; }
+#overlay p { font-size: 16px; margin: 4px 0; color: #ccc; text-align: center; line-height: 1.5; }
+#overlay button {
+  margin-top: 20px;
+  padding: 12px 36px;
+  font-size: 20px;
+  background: #4a8f29;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+#overlay button:hover { background: #5cb832; }
+.beaver-icon { font-size: 48px; margin-bottom: 10px; }
+#controls {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+#controls button {
+  width: 64px;
+  height: 64px;
+  font-size: 28px;
+  background: rgba(255,255,255,0.15);
+  color: #fff;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-radius: 12px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+#controls button:active { background: rgba(255,255,255,0.35); }
+</style>
+</head>
+<body>
+<div id="gameContainer">
+  <canvas id="game" width="480" height="720"></canvas>
+  <div id="ui">
+    <span id="scoreText">Wynik: 0</span>
+    <span id="livesText"></span>
+  </div>
+  <div id="overlay">
+    <div class="beaver-icon">🦫</div>
+    <h1>Bóbr na Rzece</h1>
+    <p>Steruj bobrem po rwącej rzece!<br>
+    Unikaj kłód 🪵 i wirów 🌀<br>
+    Skacz po liściach 🍃 po bonusy!<br><br>
+    ← → ruch, SPACJA skok<br>
+    Na telefonie użyj przycisków</p>
+    <button id="startBtn">Graj!</button>
+  </div>
+  <div id="controls">
+    <button id="btnLeft">←</button>
+    <button id="btnJump">⬆</button>
+    <button id="btnRight">→</button>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 480, H = 720;
+
+const LANE_COUNT = 5;
+const LANE_W = W / LANE_COUNT;
+
+const overlay = document.getElementById('overlay');
+const scoreText = document.getElementById('scoreText');
+const livesText = document.getElementById('livesText');
+const startBtn = document.getElementById('startBtn');
+
+let game = null;
+let keys = {};
+let animFrame = null;
+
+// Input
+document.addEventListener('keydown', e => { keys[e.code] = true; });
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// Touch controls
+function addTouchBtn(id, keyCode) {
+  const btn = document.getElementById(id);
+  btn.addEventListener('touchstart', e => { e.preventDefault(); keys[keyCode] = true; });
+  btn.addEventListener('touchend', e => { e.preventDefault(); keys[keyCode] = false; });
+  btn.addEventListener('mousedown', e => { keys[keyCode] = true; });
+  btn.addEventListener('mouseup', e => { keys[keyCode] = false; });
+}
+addTouchBtn('btnLeft', 'ArrowLeft');
+addTouchBtn('btnRight', 'ArrowRight');
+addTouchBtn('btnJump', 'Space');
+
+// Particles
+class Particle {
+  constructor(x, y, color, vx, vy, life) {
+    this.x = x; this.y = y;
+    this.color = color;
+    this.vx = vx; this.vy = vy;
+    this.life = life;
+    this.maxLife = life;
+    this.size = 2 + Math.random() * 3;
+  }
+  update(dt) {
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+    this.life -= dt;
+  }
+  draw() {
+    const a = Math.max(0, this.life / this.maxLife);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = this.color;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size * a, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+class Game {
+  constructor() {
+    this.score = 0;
+    this.lives = 3;
+    this.speed = 150;
+    this.distance = 0;
+    this.gameOver = false;
+    this.invincible = 0;
+    this.particles = [];
+    this.obstacles = [];
+    this.leaves = [];
+    this.spawnTimer = 0;
+    this.leafTimer = 0;
+    this.riverOffset = 0;
+    this.whirlAngles = new Map();
+
+    // Beaver
+    this.beaver = {
+      x: W / 2,
+      y: H - 160,
+      w: 40,
+      h: 40,
+      vx: 0,
+      vy: 0,
+      jumping: false,
+      jumpTimer: 0,
+      lane: 2,
+      swimAnim: 0
+    };
+  }
+
+  spawnObstacle() {
+    const lane = Math.floor(Math.random() * LANE_COUNT);
+    const type = Math.random() < 0.45 ? 'log' : 'whirl';
+    const w = type === 'log' ? 60 + Math.random() * 30 : 44;
+    const h = type === 'log' ? 28 : 44;
+    const obs = {
+      x: lane * LANE_W + LANE_W / 2,
+      y: -60,
+      w, h, type,
+      id: Math.random()
+    };
+    if (type === 'whirl') this.whirlAngles.set(obs.id, 0);
+    this.obstacles.push(obs);
+  }
+
+  spawnLeaf() {
+    const lane = Math.floor(Math.random() * LANE_COUNT);
+    this.leaves.push({
+      x: lane * LANE_W + LANE_W / 2,
+      y: -40,
+      w: 36, h: 36,
+      collected: false,
+      bobPhase: Math.random() * Math.PI * 2
+    });
+  }
+
+  addSplash(x, y, count, color) {
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 40 + Math.random() * 80;
+      this.particles.push(new Particle(
+        x, y, color,
+        Math.cos(angle) * speed,
+        Math.sin(angle) * speed,
+        0.4 + Math.random() * 0.4
+      ));
+    }
+  }
+
+  update(dt) {
+    if (this.gameOver) return;
+
+    const b = this.beaver;
+    this.speed = 150 + this.distance * 0.003;
+    this.distance += this.speed * dt;
+    this.score = Math.floor(this.distance / 10);
+    this.riverOffset = (this.riverOffset + this.speed * dt * 0.5) % 40;
+
+    // Beaver movement
+    const moveSpeed = 260;
+    if (keys['ArrowLeft'] || keys['KeyA']) b.vx = -moveSpeed;
+    else if (keys['ArrowRight'] || keys['KeyD']) b.vx = moveSpeed;
+    else b.vx = 0;
+
+    if ((keys['Space'] || keys['ArrowUp'] || keys['KeyW']) && !b.jumping) {
+      b.jumping = true;
+      b.jumpTimer = 0.4;
+      b.vy = -200;
+      this.addSplash(b.x, b.y + b.h / 2, 6, '#8ED1FC');
+    }
+
+    b.x += b.vx * dt;
+    b.x = Math.max(b.w / 2, Math.min(W - b.w / 2, b.x));
+
+    if (b.jumping) {
+      b.jumpTimer -= dt;
+      b.vy += 500 * dt;
+      b.y += b.vy * dt;
+      if (b.jumpTimer <= 0) {
+        b.jumping = false;
+        b.vy = 0;
+        b.y = H - 160;
+        this.addSplash(b.x, b.y + b.h / 2, 8, '#8ED1FC');
+      }
+    }
+
+    b.swimAnim += dt * 8;
+    if (this.invincible > 0) this.invincible -= dt;
+
+    // Spawning
+    const spawnInterval = Math.max(0.4, 1.2 - this.distance * 0.0001);
+    this.spawnTimer += dt;
+    if (this.spawnTimer > spawnInterval) {
+      this.spawnTimer = 0;
+      this.spawnObstacle();
+      // Sometimes spawn double
+      if (Math.random() < 0.2 + this.distance * 0.00005) {
+        this.spawnObstacle();
+      }
+    }
+
+    this.leafTimer += dt;
+    if (this.leafTimer > 2.5) {
+      this.leafTimer = 0;
+      this.spawnLeaf();
+    }
+
+    // Update obstacles
+    for (let i = this.obstacles.length - 1; i >= 0; i--) {
+      const o = this.obstacles[i];
+      o.y += this.speed * dt;
+      if (o.type === 'whirl') {
+        this.whirlAngles.set(o.id, (this.whirlAngles.get(o.id) || 0) + dt * 4);
+      }
+      if (o.y > H + 60) {
+        if (o.type === 'whirl') this.whirlAngles.delete(o.id);
+        this.obstacles.splice(i, 1);
+        continue;
+      }
+      // Collision
+      if (this.invincible <= 0 && this.boxCollide(b, o, b.jumping ? 0.5 : 0.8)) {
+        this.hit(o);
+      }
+    }
+
+    // Update leaves
+    for (let i = this.leaves.length - 1; i >= 0; i--) {
+      const l = this.leaves[i];
+      l.y += this.speed * dt * 0.85;
+      l.bobPhase += dt * 3;
+      if (l.y > H + 40) { this.leaves.splice(i, 1); continue; }
+      if (!l.collected && this.boxCollide(b, l, 0.7)) {
+        l.collected = true;
+        this.score += 25;
+        this.addSplash(l.x, l.y, 10, '#7CFC00');
+        this.leaves.splice(i, 1);
+      }
+    }
+
+    // Update particles
+    for (let i = this.particles.length - 1; i >= 0; i--) {
+      this.particles[i].update(dt);
+      if (this.particles[i].life <= 0) this.particles.splice(i, 1);
+    }
+
+    // Water particles
+    if (Math.random() < 0.3) {
+      this.particles.push(new Particle(
+        Math.random() * W, -5, 'rgba(200,230,255,0.5)',
+        (Math.random() - 0.5) * 20, this.speed * 0.4,
+        1 + Math.random()
+      ));
+    }
+
+    scoreText.textContent = `Wynik: ${this.score}`;
+    livesText.textContent = '❤️'.repeat(Math.max(0, this.lives));
+  }
+
+  boxCollide(a, b, shrink) {
+    const aw = a.w * shrink, ah = a.h * shrink;
+    const bw = b.w * shrink, bh = b.h * shrink;
+    return Math.abs(a.x - b.x) < (aw + bw) / 2 &&
+           Math.abs(a.y - b.y) < (ah + bh) / 2;
+  }
+
+  hit(obstacle) {
+    this.lives--;
+    this.invincible = 1.5;
+    this.addSplash(this.beaver.x, this.beaver.y, 15,
+      obstacle.type === 'log' ? '#8B4513' : '#6699FF');
+    if (this.lives <= 0) {
+      this.gameOver = true;
+      this.showGameOver();
+    }
+  }
+
+  showGameOver() {
+    overlay.classList.remove('hidden');
+    overlay.innerHTML = `
+      <div class="beaver-icon">🦫</div>
+      <h2>Koniec gry!</h2>
+      <p>Wynik: <strong style="color:#7f7;font-size:24px">${this.score}</strong></p>
+      <p>Dystans: ${Math.floor(this.distance)}m</p>
+      <button id="restartBtn">Zagraj ponownie</button>
+    `;
+    document.getElementById('restartBtn').addEventListener('click', startGame);
+  }
+
+  draw() {
+    // River background
+    const grad = ctx.createLinearGradient(0, 0, W, 0);
+    grad.addColorStop(0, '#1a5276');
+    grad.addColorStop(0.3, '#2980b9');
+    grad.addColorStop(0.5, '#3498db');
+    grad.addColorStop(0.7, '#2980b9');
+    grad.addColorStop(1, '#1a5276');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    // River flow lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 12; i++) {
+      const x = (i * 45 + 10);
+      ctx.beginPath();
+      for (let y = -40; y < H + 40; y += 5) {
+        const offsetY = (y + this.riverOffset) % H;
+        const wave = Math.sin(y * 0.02 + this.riverOffset * 0.05) * 8;
+        if (y === -40) ctx.moveTo(x + wave, offsetY);
+        else ctx.lineTo(x + wave, offsetY);
+      }
+      ctx.stroke();
+    }
+
+    // Riverbank
+    ctx.fillStyle = '#2d5016';
+    ctx.fillRect(0, 0, 12, H);
+    ctx.fillRect(W - 12, 0, 12, H);
+    ctx.fillStyle = '#3d6a1e';
+    for (let y = -20; y < H + 20; y += 18) {
+      const oy = (y + this.riverOffset * 0.3) % (H + 40) - 20;
+      ctx.beginPath();
+      ctx.arc(6, oy, 8, 0, Math.PI * 2);
+      ctx.arc(W - 6, oy + 9, 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Leaves
+    for (const l of this.leaves) {
+      const bob = Math.sin(l.bobPhase) * 3;
+      ctx.save();
+      ctx.translate(l.x, l.y + bob);
+      ctx.rotate(Math.sin(l.bobPhase * 0.7) * 0.15);
+      ctx.font = '32px serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('🍃', 0, 0);
+      // Glow
+      ctx.shadowColor = '#7CFC00';
+      ctx.shadowBlur = 12;
+      ctx.fillText('🍃', 0, 0);
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    }
+
+    // Obstacles
+    for (const o of this.obstacles) {
+      ctx.save();
+      ctx.translate(o.x, o.y);
+      if (o.type === 'log') {
+        this.drawLog(o);
+      } else {
+        const angle = this.whirlAngles.get(o.id) || 0;
+        ctx.rotate(angle);
+        ctx.font = '38px serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('🌀', 0, 0);
+      }
+      ctx.restore();
+    }
+
+    // Beaver
+    const b = this.beaver;
+    ctx.save();
+    ctx.translate(b.x, b.y);
+
+    // Shadow
+    if (b.jumping) {
+      const jumpProgress = 1 - b.jumpTimer / 0.4;
+      const shadowScale = 0.6 + jumpProgress * 0.4;
+      ctx.globalAlpha = 0.3;
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.ellipse(0, 20, 18 * shadowScale, 6 * shadowScale, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // Blink when invincible
+    if (this.invincible > 0 && Math.floor(this.invincible * 10) % 2) {
+      ctx.globalAlpha = 0.4;
+    }
+
+    // Swim bob
+    const swimBob = b.jumping ? 0 : Math.sin(b.swimAnim) * 2;
+
+    // Body
+    ctx.fillStyle = '#8B5E3C';
+    ctx.beginPath();
+    ctx.ellipse(0, swimBob, 18, 22, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Belly
+    ctx.fillStyle = '#C4956A';
+    ctx.beginPath();
+    ctx.ellipse(0, swimBob + 4, 12, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Head
+    ctx.fillStyle = '#8B5E3C';
+    ctx.beginPath();
+    ctx.ellipse(0, swimBob - 20, 14, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Eyes
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.ellipse(-5, swimBob - 22, 4, 4.5, 0, 0, Math.PI * 2);
+    ctx.ellipse(5, swimBob - 22, 4, 4.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#222';
+    ctx.beginPath();
+    ctx.arc(-5, swimBob - 22, 2, 0, Math.PI * 2);
+    ctx.arc(5, swimBob - 22, 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Nose
+    ctx.fillStyle = '#5a3a20';
+    ctx.beginPath();
+    ctx.ellipse(0, swimBob - 17, 3, 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Teeth
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(-3, swimBob - 15, 2.5, 4);
+    ctx.fillRect(0.5, swimBob - 15, 2.5, 4);
+
+    // Ears
+    ctx.fillStyle = '#6B4226';
+    ctx.beginPath();
+    ctx.arc(-11, swimBob - 27, 4, 0, Math.PI * 2);
+    ctx.arc(11, swimBob - 27, 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Tail
+    ctx.fillStyle = '#5a3a20';
+    ctx.beginPath();
+    ctx.ellipse(0, swimBob + 22, 10, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Water ripples when swimming
+    if (!b.jumping) {
+      ctx.strokeStyle = 'rgba(200,230,255,0.3)';
+      ctx.lineWidth = 1.5;
+      const ripple = Math.sin(b.swimAnim * 1.5) * 5;
+      ctx.beginPath();
+      ctx.ellipse(0, swimBob + 18, 22 + ripple, 8, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    ctx.globalAlpha = 1;
+    ctx.restore();
+
+    // Particles
+    for (const p of this.particles) p.draw();
+  }
+
+  drawLog(o) {
+    // Wood log
+    ctx.fillStyle = '#6B3A10';
+    const hw = o.w / 2, hh = o.h / 2;
+    ctx.beginPath();
+    ctx.roundRect(-hw, -hh, o.w, o.h, 8);
+    ctx.fill();
+
+    // Wood grain
+    ctx.strokeStyle = '#553010';
+    ctx.lineWidth = 1;
+    for (let i = -hw + 8; i < hw; i += 10) {
+      ctx.beginPath();
+      ctx.moveTo(i, -hh + 4);
+      ctx.lineTo(i, hh - 4);
+      ctx.stroke();
+    }
+
+    // End circles
+    ctx.fillStyle = '#8B5E3C';
+    ctx.beginPath();
+    ctx.ellipse(-hw + 4, 0, 5, hh - 3, 0, 0, Math.PI * 2);
+    ctx.ellipse(hw - 4, 0, 5, hh - 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Rings
+    ctx.strokeStyle = '#6B3A10';
+    ctx.beginPath();
+    ctx.ellipse(-hw + 4, 0, 3, hh - 6, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(hw - 4, 0, 3, hh - 6, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+}
+
+function startGame() {
+  overlay.classList.add('hidden');
+  game = new Game();
+  keys = {};
+  if (animFrame) cancelAnimationFrame(animFrame);
+  let lastTime = performance.now();
+
+  function loop(time) {
+    const dt = Math.min(0.05, (time - lastTime) / 1000);
+    lastTime = time;
+    game.update(dt);
+    game.draw();
+    animFrame = requestAnimationFrame(loop);
+  }
+  animFrame = requestAnimationFrame(loop);
+}
+
+startBtn.addEventListener('click', startGame);
+
+// Draw initial screen background
+const grad = ctx.createLinearGradient(0, 0, W, 0);
+grad.addColorStop(0, '#1a5276');
+grad.addColorStop(0.5, '#3498db');
+grad.addColorStop(1, '#1a5276');
+ctx.fillStyle = grad;
+ctx.fillRect(0, 0, W, H);
+</script>
+</body>
+</html>
