@@ -18,7 +18,6 @@ body {
 #gameContainer {
   position: relative;
   width: 480px;
-  height: 720px;
 }
 canvas {
   display: block;
@@ -33,16 +32,19 @@ canvas {
   right: 10px;
   display: flex;
   justify-content: space-between;
+  align-items: flex-start;
   color: #fff;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: bold;
   text-shadow: 1px 1px 3px rgba(0,0,0,0.8);
   pointer-events: none;
   z-index: 10;
 }
+#uiLeft { display: flex; flex-direction: column; gap: 2px; }
+#uiRight { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; }
 #overlay {
   position: absolute;
-  top: 0; left: 0; right: 0; bottom: 0;
+  top: 0; left: 0; right: 0; height: 720px;
   background: rgba(0,0,0,0.7);
   display: flex;
   flex-direction: column;
@@ -71,9 +73,12 @@ canvas {
 .beaver-icon { font-size: 48px; margin-bottom: 10px; }
 #controls {
   margin-top: 8px;
-  display: flex;
+  display: flex !important;
   gap: 8px;
   justify-content: center;
+  align-items: stretch;
+  visibility: visible !important;
+  opacity: 1 !important;
 }
 #controls button {
   width: 64px;
@@ -89,22 +94,71 @@ canvas {
   touch-action: manipulation;
 }
 #controls button:active { background: rgba(255,255,255,0.35); }
+
+/* Power Up button */
+#btnPowerUp {
+  width: 110px !important;
+  height: 64px !important;
+  font-size: 11px !important;
+  position: relative;
+  overflow: hidden;
+  background: #1a1a1a !important;
+  border: 2px solid #555 !important;
+  color: #aaa;
+  display: flex !important;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  transition: border-color 0.3s, color 0.3s, box-shadow 0.3s;
+}
+#btnPowerUp .pu-icon { font-size: 20px; position: relative; z-index: 2; line-height: 1; }
+#btnPowerUp .pu-label { font-size: 10px; font-weight: bold; position: relative; z-index: 2; color: #ccc; letter-spacing: 0.5px; }
+#btnPowerUp .pu-pct { font-size: 13px; font-weight: bold; position: relative; z-index: 2; color: #ddd; }
+#btnPowerUp .pu-fill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 0%;
+  background: linear-gradient(to top, #b8860b, #ffd700);
+  transition: height 0.2s;
+  z-index: 1;
+}
+#btnPowerUp.ready {
+  border-color: #ffd700 !important;
+  color: #fff;
+  box-shadow: 0 0 12px rgba(255,215,0,0.5);
+}
+#btnPowerUp.ready .pu-label,
+#btnPowerUp.ready .pu-pct { color: #fff; text-shadow: 0 0 6px rgba(255,215,0,0.8); }
 </style>
 </head>
 <body>
 <div id="gameContainer">
   <canvas id="game" width="480" height="720"></canvas>
   <div id="ui">
-    <span id="scoreText">Wynik: 0</span>
-    <span id="livesText"></span>
+    <div id="uiLeft">
+      <span id="scoreText">Wynik: 0</span>
+      <span id="livesText"></span>
+    </div>
+    <div id="uiRight">
+      <span id="leavesText">🍃 0</span>
+      <span id="sticksText">🪵 0</span>
+      <span id="jumpCdText"></span>
+    </div>
   </div>
   <div id="overlay">
     <div class="beaver-icon">🦫</div>
     <h1>Bóbr na Rzece</h1>
     <p>Steruj bobrem po rwącej rzece!<br>
     Unikaj kłód 🪵 i wirów 🌀<br>
-    Skacz po liściach 🍃 po bonusy!<br><br>
-    ← → ruch, SPACJA skok<br>
+    Zbieraj liście 🍃 i patyki!<br><br>
+    ← → ruch, SPACJA skok (3s cooldown)<br>
+    <strong>1</strong> lub Power Up = zniszcz przeszkody<br>
+    (100% = 5 patyków + 3 liście)<br>
+    Powyżej 100%: co 20% = dodatkowa!<br><br>
+    Skok = nieśmiertelność!<br>
     Na telefonie użyj przycisków</p>
     <button id="startBtn">Graj!</button>
   </div>
@@ -112,6 +166,12 @@ canvas {
     <button id="btnLeft">←</button>
     <button id="btnJump">⬆</button>
     <button id="btnRight">→</button>
+    <button id="btnPowerUp">
+      <div class="pu-fill" id="puFill"></div>
+      <span class="pu-icon">🪚</span>
+      <span class="pu-label">Power Up 1</span>
+      <span class="pu-pct" id="puPct">0%</span>
+    </button>
   </div>
 </div>
 
@@ -126,27 +186,52 @@ const LANE_W = W / LANE_COUNT;
 const overlay = document.getElementById('overlay');
 const scoreText = document.getElementById('scoreText');
 const livesText = document.getElementById('livesText');
+const leavesText = document.getElementById('leavesText');
+const sticksText = document.getElementById('sticksText');
+const jumpCdText = document.getElementById('jumpCdText');
 const startBtn = document.getElementById('startBtn');
+const btnPowerUp = document.getElementById('btnPowerUp');
+const puFill = document.getElementById('puFill');
+const puPct = document.getElementById('puPct');
+
+// Cost for 100%
+const COST_STICKS = 5;
+const COST_LEAVES = 3;
 
 let game = null;
 let keys = {};
+let keysJustPressed = {};
 let animFrame = null;
 
 // Input
-document.addEventListener('keydown', e => { keys[e.code] = true; });
+document.addEventListener('keydown', e => {
+  if (!keys[e.code]) keysJustPressed[e.code] = true;
+  keys[e.code] = true;
+});
 document.addEventListener('keyup', e => { keys[e.code] = false; });
 
 // Touch controls
 function addTouchBtn(id, keyCode) {
   const btn = document.getElementById(id);
-  btn.addEventListener('touchstart', e => { e.preventDefault(); keys[keyCode] = true; });
+  btn.addEventListener('touchstart', e => {
+    e.preventDefault();
+    if (!keys[keyCode]) keysJustPressed[keyCode] = true;
+    keys[keyCode] = true;
+  });
   btn.addEventListener('touchend', e => { e.preventDefault(); keys[keyCode] = false; });
-  btn.addEventListener('mousedown', e => { keys[keyCode] = true; });
+  btn.addEventListener('mousedown', e => {
+    if (!keys[keyCode]) keysJustPressed[keyCode] = true;
+    keys[keyCode] = true;
+  });
   btn.addEventListener('mouseup', e => { keys[keyCode] = false; });
 }
 addTouchBtn('btnLeft', 'ArrowLeft');
 addTouchBtn('btnRight', 'ArrowRight');
 addTouchBtn('btnJump', 'Space');
+
+// Power Up button
+btnPowerUp.addEventListener('touchstart', e => { e.preventDefault(); if (game) game.tryPowerUp(); });
+btnPowerUp.addEventListener('mousedown', e => { if (game) game.tryPowerUp(); });
 
 // Particles
 class Particle {
@@ -177,6 +262,7 @@ class Particle {
 class Game {
   constructor() {
     this.score = 0;
+    this.scoreAccum = 0;
     this.lives = 3;
     this.speed = 150;
     this.distance = 0;
@@ -184,11 +270,21 @@ class Game {
     this.invincible = 0;
     this.particles = [];
     this.obstacles = [];
-    this.leaves = [];
+    this.collectibles = [];
     this.spawnTimer = 0;
+    this.stickTimer = 0;
     this.leafTimer = 0;
+    this.nextStickInterval = 2 + Math.random() * 4;
+    this.nextLeafInterval = 5 + Math.random() * 3;
     this.riverOffset = 0;
     this.whirlAngles = new Map();
+
+    // Resources
+    this.collectedLeaves = 0;
+    this.collectedSticks = 0;
+
+    // Jump cooldown
+    this.jumpCooldown = 0;
 
     // Beaver
     this.beaver = {
@@ -200,14 +296,38 @@ class Game {
       vy: 0,
       jumping: false,
       jumpTimer: 0,
-      lane: 2,
       swimAnim: 0
     };
   }
 
+  // Calculate the fill percentage based on collected resources vs cost
+  getPowerPercent() {
+    // Each resource contributes proportionally: sticks are 5/8 of cost, leaves 3/8
+    const stickPct = this.collectedSticks / COST_STICKS;
+    const leafPct = this.collectedLeaves / COST_LEAVES;
+    // Weighted average (sticks weight 5/8, leaves weight 3/8) but simpler:
+    // percentage = min(sticks/5, unlimited) * 62.5% + min(leaves/3, unlimited) * 37.5%
+    // Actually: total percent = (stickPct + leafPct) / 2 * 100 mapped so 100% = enough for both
+    // Simplest: percent = min(stickPct, leafPct) * 100 wouldn't work for overflow...
+    // Better: treat each resource independently capped contribution
+    // stickContrib = sticks/5 * 50, leafContrib = leaves/3 * 50 => total = stickContrib + leafContrib
+    // So 5 sticks + 3 leaves = 50 + 50 = 100%
+    const pct = (this.collectedSticks / COST_STICKS) * 50 + (this.collectedLeaves / COST_LEAVES) * 50;
+    return pct;
+  }
+
+  // How many obstacles to destroy at current resources
+  getDestroyCount() {
+    const pct = this.getPowerPercent();
+    if (pct < 100) return 0;
+    // 100% = 1, 120% = 2, 140% = 3, etc.
+    return 1 + Math.floor((pct - 100) / 20);
+  }
+
   spawnObstacle() {
     const lane = Math.floor(Math.random() * LANE_COUNT);
-    const type = Math.random() < 0.45 ? 'log' : 'whirl';
+    // Reduced whirl chance: was 55% whirl, now ~27.5% whirl (50% reduction)
+    const type = Math.random() < 0.725 ? 'log' : 'whirl';
     const w = type === 'log' ? 60 + Math.random() * 30 : 44;
     const h = type === 'log' ? 28 : 44;
     const obs = {
@@ -220,13 +340,13 @@ class Game {
     this.obstacles.push(obs);
   }
 
-  spawnLeaf() {
+  spawnCollectible(type) {
     const lane = Math.floor(Math.random() * LANE_COUNT);
-    this.leaves.push({
+    this.collectibles.push({
       x: lane * LANE_W + LANE_W / 2,
       y: -40,
       w: 36, h: 36,
-      collected: false,
+      type,
       bobPhase: Math.random() * Math.PI * 2
     });
   }
@@ -244,14 +364,61 @@ class Game {
     }
   }
 
+  tryPowerUp() {
+    if (this.gameOver) return;
+    const count = this.getDestroyCount();
+    if (count <= 0) return;
+
+    // Consume all resources
+    this.collectedSticks = 0;
+    this.collectedLeaves = 0;
+
+    // Destroy 'count' nearest obstacles
+    for (let n = 0; n < count; n++) {
+      this.destroyNearest();
+    }
+  }
+
+  destroyNearest() {
+    if (this.obstacles.length === 0) return;
+    const b = this.beaver;
+    let closest = null;
+    let closestDist = Infinity;
+    for (const o of this.obstacles) {
+      if (o.y < -60 || o.y > H + 60) continue;
+      const dist = Math.hypot(o.x - b.x, o.y - b.y);
+      if (dist < closestDist) {
+        closestDist = dist;
+        closest = o;
+      }
+    }
+    if (closest) {
+      this.addSplash(closest.x, closest.y, 20, '#FFD700');
+      this.addSplash(closest.x, closest.y, 10, '#FF6633');
+      if (closest.type === 'whirl') this.whirlAngles.delete(closest.id);
+      const idx = this.obstacles.indexOf(closest);
+      if (idx !== -1) this.obstacles.splice(idx, 1);
+    }
+  }
+
   update(dt) {
     if (this.gameOver) return;
 
     const b = this.beaver;
     this.speed = 150 + this.distance * 0.003;
     this.distance += this.speed * dt;
-    this.score = Math.floor(this.distance / 10);
+
+    // Score: 1 point per second
+    this.scoreAccum += dt;
+    if (this.scoreAccum >= 1) {
+      this.score += Math.floor(this.scoreAccum);
+      this.scoreAccum -= Math.floor(this.scoreAccum);
+    }
+
     this.riverOffset = (this.riverOffset + this.speed * dt * 0.5) % 40;
+
+    // Jump cooldown
+    if (this.jumpCooldown > 0) this.jumpCooldown -= dt;
 
     // Beaver movement
     const moveSpeed = 260;
@@ -259,11 +426,17 @@ class Game {
     else if (keys['ArrowRight'] || keys['KeyD']) b.vx = moveSpeed;
     else b.vx = 0;
 
-    if ((keys['Space'] || keys['ArrowUp'] || keys['KeyW']) && !b.jumping) {
+    if ((keys['Space'] || keys['ArrowUp'] || keys['KeyW']) && !b.jumping && this.jumpCooldown <= 0) {
       b.jumping = true;
       b.jumpTimer = 0.4;
       b.vy = -200;
+      this.jumpCooldown = 3;
       this.addSplash(b.x, b.y + b.h / 2, 6, '#8ED1FC');
+    }
+
+    // Power Up with key 1
+    if (keysJustPressed['Digit1']) {
+      this.tryPowerUp();
     }
 
     b.x += b.vx * dt;
@@ -284,22 +457,31 @@ class Game {
     b.swimAnim += dt * 8;
     if (this.invincible > 0) this.invincible -= dt;
 
-    // Spawning
+    // Spawning obstacles
     const spawnInterval = Math.max(0.4, 1.2 - this.distance * 0.0001);
     this.spawnTimer += dt;
     if (this.spawnTimer > spawnInterval) {
       this.spawnTimer = 0;
       this.spawnObstacle();
-      // Sometimes spawn double
       if (Math.random() < 0.2 + this.distance * 0.00005) {
         this.spawnObstacle();
       }
     }
 
+    // Spawning sticks (every 2-6 seconds)
+    this.stickTimer += dt;
+    if (this.stickTimer >= this.nextStickInterval) {
+      this.stickTimer = 0;
+      this.nextStickInterval = 2 + Math.random() * 4;
+      this.spawnCollectible('stick');
+    }
+
+    // Spawning leaves (every 5-8 seconds)
     this.leafTimer += dt;
-    if (this.leafTimer > 2.5) {
+    if (this.leafTimer >= this.nextLeafInterval) {
       this.leafTimer = 0;
-      this.spawnLeaf();
+      this.nextLeafInterval = 5 + Math.random() * 3;
+      this.spawnCollectible('leaf');
     }
 
     // Update obstacles
@@ -314,23 +496,27 @@ class Game {
         this.obstacles.splice(i, 1);
         continue;
       }
-      // Collision
-      if (this.invincible <= 0 && this.boxCollide(b, o, b.jumping ? 0.5 : 0.8)) {
+      // Collision — beaver is invincible during jump
+      if (!b.jumping && this.invincible <= 0 && this.boxCollide(b, o, 0.8)) {
         this.hit(o);
       }
     }
 
-    // Update leaves
-    for (let i = this.leaves.length - 1; i >= 0; i--) {
-      const l = this.leaves[i];
-      l.y += this.speed * dt * 0.85;
-      l.bobPhase += dt * 3;
-      if (l.y > H + 40) { this.leaves.splice(i, 1); continue; }
-      if (!l.collected && this.boxCollide(b, l, 0.7)) {
-        l.collected = true;
-        this.score += 25;
-        this.addSplash(l.x, l.y, 10, '#7CFC00');
-        this.leaves.splice(i, 1);
+    // Update collectibles
+    for (let i = this.collectibles.length - 1; i >= 0; i--) {
+      const c = this.collectibles[i];
+      c.y += this.speed * dt * 0.85;
+      c.bobPhase += dt * 3;
+      if (c.y > H + 40) { this.collectibles.splice(i, 1); continue; }
+      if (this.boxCollide(b, c, 0.7)) {
+        if (c.type === 'leaf') {
+          this.collectedLeaves++;
+          this.addSplash(c.x, c.y, 10, '#7CFC00');
+        } else {
+          this.collectedSticks++;
+          this.addSplash(c.x, c.y, 8, '#DEB887');
+        }
+        this.collectibles.splice(i, 1);
       }
     }
 
@@ -349,8 +535,36 @@ class Game {
       ));
     }
 
+    // UI text
     scoreText.textContent = `Wynik: ${this.score}`;
     livesText.textContent = '❤️'.repeat(Math.max(0, this.lives));
+    leavesText.textContent = `🍃 ${this.collectedLeaves}`;
+    sticksText.textContent = `🪵 ${this.collectedSticks}`;
+
+    if (this.jumpCooldown > 0 && !b.jumping) {
+      jumpCdText.textContent = `Skok: ${this.jumpCooldown.toFixed(1)}s`;
+      jumpCdText.style.color = '#f88';
+    } else {
+      jumpCdText.textContent = 'Skok: OK';
+      jumpCdText.style.color = '#8f8';
+    }
+
+    // Power Up button fill
+    const pct = this.getPowerPercent();
+    const destroyCount = this.getDestroyCount();
+    const fillH = Math.min(pct, 100);
+    puFill.style.height = fillH + '%';
+    puPct.textContent = Math.floor(pct) + '%';
+
+    if (destroyCount > 0) {
+      btnPowerUp.classList.add('ready');
+      puPct.textContent = Math.floor(pct) + '% (x' + destroyCount + ')';
+    } else {
+      btnPowerUp.classList.remove('ready');
+    }
+
+    // Clear just-pressed keys
+    keysJustPressed = {};
   }
 
   boxCollide(a, b, shrink) {
@@ -377,6 +591,7 @@ class Game {
       <div class="beaver-icon">🦫</div>
       <h2>Koniec gry!</h2>
       <p>Wynik: <strong style="color:#7f7;font-size:24px">${this.score}</strong></p>
+      <p>Zebrano: 🍃 ${this.collectedLeaves} | 🪵 ${this.collectedSticks}</p>
       <p>Dystans: ${Math.floor(this.distance)}m</p>
       <button id="restartBtn">Zagraj ponownie</button>
     `;
@@ -422,20 +637,24 @@ class Game {
       ctx.fill();
     }
 
-    // Leaves
-    for (const l of this.leaves) {
-      const bob = Math.sin(l.bobPhase) * 3;
+    // Collectibles
+    for (const c of this.collectibles) {
+      const bob = Math.sin(c.bobPhase) * 3;
       ctx.save();
-      ctx.translate(l.x, l.y + bob);
-      ctx.rotate(Math.sin(l.bobPhase * 0.7) * 0.15);
-      ctx.font = '32px serif';
+      ctx.translate(c.x, c.y + bob);
+      ctx.rotate(Math.sin(c.bobPhase * 0.7) * 0.15);
+      ctx.font = '30px serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('🍃', 0, 0);
-      // Glow
-      ctx.shadowColor = '#7CFC00';
-      ctx.shadowBlur = 12;
-      ctx.fillText('🍃', 0, 0);
+      if (c.type === 'leaf') {
+        ctx.shadowColor = '#7CFC00';
+        ctx.shadowBlur = 12;
+        ctx.fillText('🍃', 0, 0);
+      } else {
+        ctx.shadowColor = '#DEB887';
+        ctx.shadowBlur = 10;
+        this.drawStick(c);
+      }
       ctx.shadowBlur = 0;
       ctx.restore();
     }
@@ -479,6 +698,12 @@ class Game {
       ctx.globalAlpha = 0.4;
     }
 
+    // Jump glow (invincible indicator)
+    if (b.jumping) {
+      ctx.shadowColor = '#FFD700';
+      ctx.shadowBlur = 20;
+    }
+
     // Swim bob
     const swimBob = b.jumping ? 0 : Math.sin(b.swimAnim) * 2;
 
@@ -499,6 +724,8 @@ class Game {
     ctx.beginPath();
     ctx.ellipse(0, swimBob - 20, 14, 12, 0, 0, Math.PI * 2);
     ctx.fill();
+
+    ctx.shadowBlur = 0;
 
     // Eyes
     ctx.fillStyle = '#fff';
@@ -551,17 +778,53 @@ class Game {
 
     // Particles
     for (const p of this.particles) p.draw();
+
+    // Jump cooldown bar on canvas
+    if (this.jumpCooldown > 0 && !this.beaver.jumping) {
+      const barW = 80;
+      const barH = 6;
+      const barX = W / 2 - barW / 2;
+      const barY = H - 55;
+      const pct = this.jumpCooldown / 3;
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.beginPath();
+      ctx.roundRect(barX - 2, barY - 2, barW + 4, barH + 4, 4);
+      ctx.fill();
+      ctx.fillStyle = '#f55';
+      ctx.beginPath();
+      ctx.roundRect(barX, barY, barW * pct, barH, 3);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('SKOK', W / 2, barY - 4);
+    }
+  }
+
+  drawStick(c) {
+    ctx.fillStyle = '#A0724A';
+    ctx.beginPath();
+    ctx.roundRect(-14, -4, 28, 8, 3);
+    ctx.fill();
+    ctx.fillStyle = '#8B5E3C';
+    ctx.beginPath();
+    ctx.roundRect(-10, -2, 6, 4, 2);
+    ctx.fill();
+    ctx.strokeStyle = '#A0724A';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(6, -2);
+    ctx.lineTo(10, -7);
+    ctx.stroke();
   }
 
   drawLog(o) {
-    // Wood log
     ctx.fillStyle = '#6B3A10';
     const hw = o.w / 2, hh = o.h / 2;
     ctx.beginPath();
     ctx.roundRect(-hw, -hh, o.w, o.h, 8);
     ctx.fill();
 
-    // Wood grain
     ctx.strokeStyle = '#553010';
     ctx.lineWidth = 1;
     for (let i = -hw + 8; i < hw; i += 10) {
@@ -571,14 +834,12 @@ class Game {
       ctx.stroke();
     }
 
-    // End circles
     ctx.fillStyle = '#8B5E3C';
     ctx.beginPath();
     ctx.ellipse(-hw + 4, 0, 5, hh - 3, 0, 0, Math.PI * 2);
     ctx.ellipse(hw - 4, 0, 5, hh - 3, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // Rings
     ctx.strokeStyle = '#6B3A10';
     ctx.beginPath();
     ctx.ellipse(-hw + 4, 0, 3, hh - 6, 0, 0, Math.PI * 2);
@@ -593,6 +854,10 @@ function startGame() {
   overlay.classList.add('hidden');
   game = new Game();
   keys = {};
+  keysJustPressed = {};
+  puFill.style.height = '0%';
+  puPct.textContent = '0%';
+  btnPowerUp.classList.remove('ready');
   if (animFrame) cancelAnimationFrame(animFrame);
   let lastTime = performance.now();
 
